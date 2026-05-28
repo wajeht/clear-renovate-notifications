@@ -9,6 +9,10 @@ concurrency:
     group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
     cancel-in-progress: true
 
+permissions:
+  contents: read
+  packages: write
+
 env:
   APP_PORT: 80
   APP_ENV: "testing"
@@ -76,7 +80,7 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
-          password: ${{ secrets.GH_TOKEN }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate Image Name
         id: image-name
