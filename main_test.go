@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func testConfig() config {
@@ -69,7 +70,7 @@ func TestPollClearsOnlyBotPRs(t *testing.T) {
 	var deletes, patches []string
 	newStub(t, &deletes, &patches)
 
-	if err := poll(http.DefaultClient, testConfig()); err != nil {
+	if _, err := poll(http.DefaultClient, testConfig(), nil); err != nil {
 		t.Fatalf("poll: %v", err)
 	}
 
@@ -88,7 +89,7 @@ func TestPollDryRunMakesNoMutations(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.dryRun = true
-	if err := poll(http.DefaultClient, cfg); err != nil {
+	if _, err := poll(http.DefaultClient, cfg, nil); err != nil {
 		t.Fatalf("poll: %v", err)
 	}
 
@@ -103,7 +104,7 @@ func TestPollReadModeUsesPatch(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.markMode = "read"
-	if err := poll(http.DefaultClient, cfg); err != nil {
+	if _, err := poll(http.DefaultClient, cfg, nil); err != nil {
 		t.Fatalf("poll: %v", err)
 	}
 
@@ -113,5 +114,54 @@ func TestPollReadModeUsesPatch(t *testing.T) {
 	}
 	if len(deletes) != 0 {
 		t.Errorf("deletes = %v, want none", deletes)
+	}
+}
+
+func TestPollUsesLastModifiedAndPollInterval(t *testing.T) {
+	const lastModified = "Wed, 01 Jan 2025 00:00:00 GMT"
+	var seenIfModifiedSince []string
+	var calls int
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/notifications" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			return
+		}
+
+		calls++
+		seenIfModifiedSince = append(seenIfModifiedSince, r.Header.Get("If-Modified-Since"))
+
+		w.Header().Set("X-Poll-Interval", "120")
+		if calls == 1 {
+			w.Header().Set("Last-Modified", lastModified)
+			io.WriteString(w, `[]`)
+			return
+		}
+
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	apiBase = srv.URL
+	t.Cleanup(func() { apiBase = "https://api.github.com"; srv.Close() })
+
+	cfg := testConfig()
+	cfg.interval = 60 * time.Second
+	var storedLastModified string
+
+	delay, err := poll(http.DefaultClient, cfg, &storedLastModified)
+	if err != nil {
+		t.Fatalf("first poll: %v", err)
+	}
+	if delay != 120*time.Second {
+		t.Errorf("delay = %s, want 2m0s", delay)
+	}
+	if storedLastModified != lastModified {
+		t.Errorf("storedLastModified = %q, want %q", storedLastModified, lastModified)
+	}
+
+	if _, err := poll(http.DefaultClient, cfg, &storedLastModified); err != nil {
+		t.Fatalf("second poll: %v", err)
+	}
+	if len(seenIfModifiedSince) != 2 || seenIfModifiedSince[0] != "" || seenIfModifiedSince[1] != lastModified {
+		t.Errorf("If-Modified-Since values = %v", seenIfModifiedSince)
 	}
 }

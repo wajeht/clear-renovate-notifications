@@ -37,31 +37,54 @@ type notification struct {
 	} `json:"repository"`
 }
 
-func poll(client *http.Client, cfg config) error {
+func poll(client *http.Client, cfg config, lastModified *string) (time.Duration, error) {
 	req, err := http.NewRequest(http.MethodGet, apiBase+"/notifications?per_page=50", nil)
 
 	if err != nil {
-		return err
+		return cfg.interval, err
 	}
 
-	setAuth(req, cfg.token)
+	req.Header.Set("Authorization", "Bearer "+cfg.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	if lastModified != nil && *lastModified != "" {
+		req.Header.Set("If-Modified-Since", *lastModified)
+	}
 
 	resp, err := client.Do(req)
 
 	if err != nil {
-		return err
+		return cfg.interval, err
 	}
 
 	defer resp.Body.Close()
 
+	delay := cfg.interval
+	if seconds, err := strconv.Atoi(resp.Header.Get("X-Poll-Interval")); err == nil && seconds > 0 {
+		githubDelay := time.Duration(seconds) * time.Second
+		if githubDelay > delay {
+			delay = githubDelay
+		}
+	}
+
+	if resp.StatusCode == http.StatusNotModified {
+		return delay, nil
+	}
+
 	if resp.StatusCode != http.StatusOK {
-		return statusError("list notifications", resp)
+		return delay, statusError("list notifications", resp)
+	}
+
+	if lastModified != nil {
+		if header := resp.Header.Get("Last-Modified"); header != "" {
+			*lastModified = header
+		}
 	}
 
 	var notifs []notification
 
 	if err := json.NewDecoder(resp.Body).Decode(&notifs); err != nil {
-		return err
+		return delay, err
 	}
 
 	for _, n := range notifs {
@@ -93,7 +116,7 @@ func poll(client *http.Client, cfg config) error {
 		slog.Info("cleared", "repo", n.Repository.FullName, "title", n.Subject.Title, "author", login)
 	}
 
-	return nil
+	return delay, nil
 }
 
 func matchRepo(globs []string, fullName string) bool {
@@ -112,7 +135,9 @@ func prAuthor(client *http.Client, cfg config, url string) (string, error) {
 		return "", err
 	}
 
-	setAuth(req, cfg.token)
+	req.Header.Set("Authorization", "Bearer "+cfg.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 
 	resp, err := client.Do(req)
 
@@ -148,7 +173,9 @@ func clear(client *http.Client, cfg config, id string) error {
 	if err != nil {
 		return err
 	}
-	setAuth(req, cfg.token)
+	req.Header.Set("Authorization", "Bearer "+cfg.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -159,12 +186,6 @@ func clear(client *http.Client, cfg config, id string) error {
 		return statusError("clear thread", resp)
 	}
 	return nil
-}
-
-func setAuth(req *http.Request, token string) {
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 }
 
 func statusError(what string, resp *http.Response) error {
@@ -227,14 +248,16 @@ func main() {
 	}()
 
 	client := &http.Client{Timeout: 30 * time.Second}
+	var lastModified string
 
 	slog.Info("starting", "dry_run", cfg.dryRun, "mark_mode", cfg.markMode, "repos", cfg.globs, "bots", cfg.botLogins, "interval", cfg.interval)
 
 	for {
-		if err := poll(client, cfg); err != nil {
+		delay, err := poll(client, cfg, &lastModified)
+		if err != nil {
 			slog.Error("poll failed", "error", err)
 		}
 
-		time.Sleep(cfg.interval)
+		time.Sleep(delay)
 	}
 }
