@@ -9,15 +9,6 @@ import (
 	"time"
 )
 
-func testConfig() config {
-	return config{
-		token:     "test-token",
-		globs:     []string{"wajeht/*"},
-		botLogins: []string{"wajeht-renovate", "wajeht-renovate[bot]"},
-		markMode:  "done",
-	}
-}
-
 func TestMatchRepo(t *testing.T) {
 	globs := []string{"wajeht/*", "acme/api"}
 	cases := map[string]bool{
@@ -70,7 +61,14 @@ func TestPollClearsOnlyBotPRs(t *testing.T) {
 	var deletes, patches []string
 	newStub(t, &deletes, &patches)
 
-	if _, err := poll(http.DefaultClient, testConfig(), nil); err != nil {
+	cfg := config{
+		token:     "test-token",
+		globs:     []string{"wajeht/*"},
+		botLogins: []string{"wajeht-renovate", "wajeht-renovate[bot]"},
+		markMode:  "done",
+	}
+
+	if _, err := poll(http.DefaultClient, cfg, nil); err != nil {
 		t.Fatalf("poll: %v", err)
 	}
 
@@ -87,8 +85,14 @@ func TestPollDryRunMakesNoMutations(t *testing.T) {
 	var deletes, patches []string
 	newStub(t, &deletes, &patches)
 
-	cfg := testConfig()
-	cfg.dryRun = true
+	cfg := config{
+		token:     "test-token",
+		globs:     []string{"wajeht/*"},
+		botLogins: []string{"wajeht-renovate", "wajeht-renovate[bot]"},
+		markMode:  "done",
+		dryRun:    true,
+	}
+
 	if _, err := poll(http.DefaultClient, cfg, nil); err != nil {
 		t.Fatalf("poll: %v", err)
 	}
@@ -102,8 +106,13 @@ func TestPollReadModeUsesPatch(t *testing.T) {
 	var deletes, patches []string
 	newStub(t, &deletes, &patches)
 
-	cfg := testConfig()
-	cfg.markMode = "read"
+	cfg := config{
+		token:     "test-token",
+		globs:     []string{"wajeht/*"},
+		botLogins: []string{"wajeht-renovate", "wajeht-renovate[bot]"},
+		markMode:  "read",
+	}
+
 	if _, err := poll(http.DefaultClient, cfg, nil); err != nil {
 		t.Fatalf("poll: %v", err)
 	}
@@ -143,8 +152,13 @@ func TestPollUsesLastModifiedAndPollInterval(t *testing.T) {
 	apiBase = srv.URL
 	t.Cleanup(func() { apiBase = "https://api.github.com"; srv.Close() })
 
-	cfg := testConfig()
-	cfg.interval = 60 * time.Second
+	cfg := config{
+		token:     "test-token",
+		interval:  60 * time.Second,
+		globs:     []string{"wajeht/*"},
+		botLogins: []string{"wajeht-renovate", "wajeht-renovate[bot]"},
+		markMode:  "done",
+	}
 	var storedLastModified string
 
 	delay, err := poll(http.DefaultClient, cfg, &storedLastModified)
