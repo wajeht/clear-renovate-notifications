@@ -72,7 +72,8 @@ func poll(client *http.Client, cfg config, lastModified *string) (time.Duration,
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return delay, statusError("list notifications", resp)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return delay, fmt.Errorf("list notifications: %s: %s", resp.Status, body)
 	}
 
 	if lastModified != nil {
@@ -148,7 +149,8 @@ func prAuthor(client *http.Client, cfg config, url string) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", statusError("get PR", resp)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return "", fmt.Errorf("get PR: %s: %s", resp.Status, body)
 	}
 
 	var pr struct {
@@ -183,30 +185,10 @@ func clear(client *http.Client, cfg config, id string) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= http.StatusMultipleChoices && resp.StatusCode != http.StatusNotModified {
-		return statusError("clear thread", resp)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return fmt.Errorf("clear thread: %s: %s", resp.Status, body)
 	}
 	return nil
-}
-
-func statusError(what string, resp *http.Response) error {
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-	return fmt.Errorf("%s: %s: %s", what, resp.Status, body)
-}
-
-func env(key, def string) string {
-	if v, ok := os.LookupEnv(key); ok {
-		return v
-	}
-	return def
-}
-
-func envInt(key string, def int) int {
-	if v, ok := os.LookupEnv(key); ok {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	return def
 }
 
 func splitTrim(s string) []string {
@@ -222,13 +204,40 @@ func splitTrim(s string) []string {
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
+	pollIntervalSeconds := 60
+	if v := os.Getenv("POLL_INTERVAL_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			pollIntervalSeconds = n
+		}
+	}
+
+	repoFilter := os.Getenv("REPO_FILTER")
+	if repoFilter == "" {
+		repoFilter = "wajeht/*"
+	}
+
+	botLogins := os.Getenv("RENOVATE_BOT_LOGINS")
+	if botLogins == "" {
+		botLogins = "wajeht-renovate,wajeht-renovate[bot]"
+	}
+
+	markMode := os.Getenv("MARK_MODE")
+	if markMode == "" {
+		markMode = "done"
+	}
+
+	appPort := os.Getenv("APP_PORT")
+	if appPort == "" {
+		appPort = "80"
+	}
+
 	cfg := config{
 		token:     os.Getenv("GITHUB_TOKEN"),
-		interval:  time.Duration(envInt("POLL_INTERVAL_SECONDS", 60)) * time.Second,
-		globs:     splitTrim(env("REPO_FILTER", "wajeht/*")),
-		botLogins: splitTrim(env("RENOVATE_BOT_LOGINS", "wajeht-renovate,wajeht-renovate[bot]")),
-		markMode:  env("MARK_MODE", "done"),
-		dryRun:    env("DRY_RUN", "false") == "true",
+		interval:  time.Duration(pollIntervalSeconds) * time.Second,
+		globs:     splitTrim(repoFilter),
+		botLogins: splitTrim(botLogins),
+		markMode:  markMode,
+		dryRun:    os.Getenv("DRY_RUN") == "true",
 	}
 
 	if cfg.token == "" {
@@ -242,7 +251,7 @@ func main() {
 	})
 
 	go func() {
-		if err := http.ListenAndServe(":"+env("APP_PORT", "80"), mux); err != nil {
+		if err := http.ListenAndServe(":"+appPort, mux); err != nil {
 			slog.Error("healthz server stopped", "error", err)
 		}
 	}()
